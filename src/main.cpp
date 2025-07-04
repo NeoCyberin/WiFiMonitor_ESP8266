@@ -1,44 +1,44 @@
 #include <Adafruit_SSD1306.h>
+#include <ESP8266WiFi.h>
 
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
 
-#define OLED_RESET     -1   // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SCREEN_ADDRESS 0x3C // If not work please scan the bus
-#define OLED_SDA 14         // D6
-#define OLED_SCL 12         // D5
+#define OLED_RESET     -1
+#define SCREEN_ADDRESS 0x3C
+#define OLED_SDA 14 // D6
+#define OLED_SCL 12 // D5
 
-Adafruit_SSD1306 *display;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-int c = 0; 
+const char* ssid = "";
+const char* password = "";
 
-
-void handle_oled(int c) {
-  display->clearDisplay();
-  display->setTextSize(1);
-  display->setTextColor(SSD1306_WHITE);
-  display->setCursor(0, 0);
-  display->println("Display is working!");
-  display->println("");
-  display->println("");
-  display->println("Have fun with it");
-  display->println("");
-  display->println("");
-  display->print("Uptime: ");
-  display->print(c);
-  display->println("s");
-  display->display();
+void displayInit() {
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    while (true);
+  }
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.println("\n\n   Initializing...");
+  display.display();
 }
 
-
 void setup() {
-  display = new Adafruit_SSD1306(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-  Wire.begin(OLED_SDA, OLED_SCL);
-  display->begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
+  displayInit();
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("WiFi Connected!");
+  display.display();
 }
 
 void loop() {
-  handle_oled(c);
-  c++;
-  delay(1000);
 }
