@@ -2,29 +2,146 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <LittleFS.h>
+#include <ArduinoJson.h>
 
-#define SCREEN_WIDTH 128  // Define the width and height of the OLED display
-#define SCREEN_HEIGHT 64 // Define the width and height of the OLED display
+#define SCREEN_WIDTH 128 
+#define SCREEN_HEIGHT 64
 
-#define OLED_RESET     -1   // Reset pin for the OLED display, -1 means no reset pin is used
-#define SCREEN_ADDRESS 0x3C // I2C address for the OLED display
-#define OLED_SDA 14         // Define the SDA pin for I2C communication (D6 on NodeMCU)
-#define OLED_SCL 12         // Define the SCL pin for I2C communication (D5 on NodeMCU)
+#define OLED_RESET     -1
+#define SCREEN_ADDRESS 0x3C
+#define OLED_SDA 14
+#define OLED_SCL 12
 
-// Create an instance of the OLED display
-// This instance is created with the specified screen width, height, and I2C interface
+#define BUTTON_PIN D4 // GPIO2
+
+volatile bool buttonPressed = false;
+
+const int totalPages = 2;
+volatile int currentPage = 0;
+
+const char* espSSID = "HW-364A";
+const char* espPassword = "1234567890";
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+ESP8266WebServer server(80);
+bool serverStarted = false;
 
-// Wi-Fi credentials
-// Replace with your network credentials
-const char* ssid = "HW-364A";
-const char* password = "1234567890";
+unsigned long lastPressTime = 0;
+const unsigned long debounceDelay = 500;
+volatile unsigned long lastInterruptTime = 0;
 
-ESP8266WebServer server(80); // Create a web server on port 80
-bool serverStarted = false; // Flag to check if the server has started
+inline const String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wi-Fi Configuration</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
 
-// Function to display a message on the OLED screen
-// This function clears the display, sets the cursor position, prints the message, and updates the
+    .container {
+      background: #fff;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.1);
+      max-width: 400px;
+      width: 90%;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 1.5rem;
+      color: #333;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: bold;
+      color: #555;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 0.75rem;
+      margin-bottom: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }
+
+    button {
+      width: 100%;
+      padding: 0.75rem;
+      background-color: #28a745;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #218838;
+    }
+
+    @media (max-width: 400px) {
+      .container {
+        padding: 1rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Wi-Fi Configuration</h2>
+    <form id="wifiConfigForm">
+      <label for="ssid">SSID</label>
+      <input type="text" id="ssid" name="ssid" placeholder="Enter SSID" required>
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter Password" required>
+
+      <button type="submit">Save</button>
+    </form>
+    <script>
+      document.getElementById('wifiConfigForm').addEventListener('submit', function(event) {
+        event.preventDefault(); // Prevent the form from submitting normally
+        const ssid = document.getElementById('ssid').value;
+        const password = document.getElementById('password').value;
+
+        fetch('/save', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}`
+        })
+        .then(response => response.text())
+        .then(data => {
+          alert(data); // Show success message
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          alert('Failed to save configuration!');
+        });
+      });
+    </script>
+  </div>
+</body>
+</html>
+)rawliteral";
+
 void displayMessage(const char* message) {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -32,8 +149,6 @@ void displayMessage(const char* message) {
   display.display();
 }
 
-// Overloaded function to display a message on the OLED screen
-// This function takes a String object as an argument, clears the display, sets the cursor position
 void displayMessage(const String& message) {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -41,9 +156,6 @@ void displayMessage(const String& message) {
   display.display();
 }
 
-// Function to initialize the OLED display
-// This function initializes the display, clears it, sets the cursor position, and prints a message
-// If the display initialization fails, it enters an infinite loop
 void displayInit() {
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -51,11 +163,9 @@ void displayInit() {
   }
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  displayMessage("\n\nWiFi Monitor started");
+  displayMessage("WiFi Monitor started");
 }
 
-// Function to initialize the LittleFS file system
-// This function attempts to mount the LittleFS file system and displays an error message if it fails
 void initializeLittleFS() {
   if (!LittleFS.begin()) {
     displayMessage("Failed to mount FS");
@@ -63,56 +173,133 @@ void initializeLittleFS() {
   }
 }
 
-// Function to start the Access Point (AP) mode
-// This function configures the AP with a local IP address, gateway, and subnet mask
 void startAP() {
-  IPAddress local_ip(192, 168, 4, 1); // Set the local IP address for the AP
-  IPAddress gateway(192, 168, 4, 1);   // Set the gateway address
-  IPAddress subnet(255, 255, 255, 0);  // Set the subnet mask
+  IPAddress local_ip(192, 168, 4, 1);
+  IPAddress gateway(192, 168, 4, 1);
+  IPAddress subnet(255, 255, 255, 0);
   
-  WiFi.softAPConfig(local_ip, gateway, subnet); // Configure the AP with the specified IP, gateway, and subnet
-  WiFi.softAP(ssid, password); // Start the AP with the specified SSID and password
+  WiFi.softAPConfig(local_ip, gateway, subnet);
+  WiFi.softAP(espSSID, espPassword);
 }
 
-// Function to handle the root URL ("/") request
-// This function serves the index.html file from the LittleFS file system
-void serverHandleRoot() {   
-  if (LittleFS.exists("/wwwroot/index.html")) {
-    File indexFile = LittleFS.open("/wwwroot/index.html", "r");
-    server.streamFile(indexFile, "text/html");
-    indexFile.close();
-  } else {
-    server.send(404, "text/plain", "404: File Not Found");
+bool saveConfig (const String& ssid, const String& password) {
+  JsonDocument doc;
+  doc["ssid"] = ssid;
+  doc["password"] = password;
+
+  File configFile = LittleFS.open("/config.json", "w");
+  if (!configFile) {
+    displayMessage("Failed to open config file for writing");
+    return false;
   }
+
+  serializeJson(doc, configFile);
+  configFile.close();
+  return true;
+}
+
+bool loadConfig(String& ssid, String& password) {
+  File configFile = LittleFS.open("/config.json", "r");
+  if (!configFile) {
+    displayMessage("Failed to open config file for reading");
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, configFile);
+  configFile.close();
+
+  if (error) {
+    displayMessage("Failed to parse config file");
+    return false;
+  }
+
+  ssid = doc["ssid"].as<String>();
+  password = doc["password"].as<String>();
+  return true;
+}
+
+void serverHandleRoot() {   
+  server.send(200, "text/html", html);
+}
+
+void serverHandleSave() {
+  if (server.method() == HTTP_POST) {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+
+    if (saveConfig(ssid, password)) {
+      displayMessage("Configuration saved successfully!");
+      server.send(200, "text/plain", "Configuration saved successfully!");
+    } else {
+      displayMessage("Failed to save configuration!");
+      server.send(500, "text/plain", "Failed to save configuration!");
+    }
+  } else {
+    server.send(405, "text/plain", "Method Not Allowed");
+  }
+  ESP.restart();
 }
 
 void serverStart() {
-  server.on("/", serverHandleRoot); // Handle requests to the root URL ("/")
-  server.onNotFound([]() { // Handle requests to URLs that are not found
-    server.send(404, "text/plain", "404: Not Found");
-  });
-  server.begin(); // Start the web server
-  serverStarted = true; // Set the flag to indicate that the server has started
+  server.on("/", serverHandleRoot);
+  server.on("/save", serverHandleSave);
+  server.begin();
+  serverStarted = true;
 
-  displayMessage("Web Server Started!\n\nWiFi SSID: " + String(ssid) + "\nPassword: " + String(password) + "\n\nVisit url: \nhttp://" + WiFi.softAPIP().toString() + "/"); // Display the web server details on the OLED screen
+  displayMessage("Web Server Started!\n\nWiFi SSID: " + String(espSSID) + "\nPassword: " + String(espPassword) + "\n\nVisit url: \nhttp://" + WiFi.softAPIP().toString() + "/");
 }
-
 void handleClient() {
   if (serverStarted) {
     server.handleClient();
   }
 }
 
+void IRAM_ATTR buttonISR() {
+  unsigned long currentInterruptTime = millis();
+  if (currentInterruptTime - lastInterruptTime > debounceDelay) {
+    buttonPressed = true;
+    lastInterruptTime = currentInterruptTime;
+  }
+}
+
+void updateDisplay() {
+  if (currentPage == 0) {
+    displayMessage("Network info, p.1 \n\n" + WiFi.SSID() + "\n" + WiFi.BSSIDstr() + "\n" + WiFi.gatewayIP().toString() + "\nRSSI: " + String(WiFi.RSSI()) + " dBm");
+  } else {
+    displayMessage("Network info, p.2 \n\nChannel: " + String(WiFi.channel()));
+  }
+}
+
 void setup() {
-  displayInit(); // Initialize the OLED display
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
-  initializeLittleFS(); // Initialize the LittleFS file system
+  displayInit();
+  initializeLittleFS();
 
-  startAP(); // Start the Access Point (AP) mode
-  serverHandleRoot(); // Handle requests to the root URL ("/")
-  serverStart(); // Start the web server
+  String wifiSSID, wifiPassword;
+  if (!loadConfig(wifiSSID, wifiPassword)) {
+    startAP();
+    serverHandleRoot();
+    serverStart();
+  } else {
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      displayMessage("Connecting to WiFi...");
+    }
+  }
 }
 
 void loop() {
-  handleClient(); // Handle incoming client requests
+  handleClient();
+  if (WiFi.status() == WL_CONNECTED) {
+    // Update display with WiFi information
+    updateDisplay();
+    if (buttonPressed) {
+      buttonPressed = false;
+      currentPage = (currentPage + 1) % totalPages;
+    }
+  }
 }
