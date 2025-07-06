@@ -5,46 +5,46 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
-#define SCREEN_WIDTH 128 
-#define SCREEN_HEIGHT 64
 
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
 #define OLED_RESET     -1
 #define SCREEN_ADDRESS 0x3C
-#define OLED_SDA 14
-#define OLED_SCL 12
+#define OLED_SDA       14
+#define OLED_SCL       12
 
 #define BUTTON_PIN D4
-
-volatile bool buttonPressed = false;
-
-const int totalPages = 2;
-volatile int currentPage = 0;
-
-int pingGateway = -1;
-int pingGoogle = -1;
-
-unsigned long lastPingUpdate = 0;
-const unsigned long pingUpdateInterval = 5000;
 
 const char* espSSID = "HW-364A";
 const char* espPassword = "1234567890";
 
+const int totalPages = 2;
+const unsigned long pingUpdateInterval = 5000;
+const unsigned long debounceDelay = 500;
+const unsigned long longPressDuration = 3000;
+const unsigned long sleepDelay = 60000;
+
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 ESP8266WebServer server(80);
-bool serverStarted = false;
 
-unsigned long lastPressTime = 0;
-const unsigned long debounceDelay = 500;
+volatile bool buttonPressed = false;
+volatile bool sleepCancelled = false;
 volatile unsigned long lastInterruptTime = 0;
 
-unsigned long buttonDownTime = 0;
+bool serverStarted = false;
 bool buttonHeld = false;
-const unsigned long longPressDuration = 3000;
+
+int pingGateway = -1;
+int pingGoogle = -1;
+
+int currentPage = 0;
 
 unsigned long startTime = 0;
-const unsigned long sleepDelay = 60000;
-volatile bool sleepCancelled = false;
+unsigned long buttonDownTime = 0;
+unsigned long lastPingUpdate = 0;
+unsigned long lastPressTime = 0;
 
+// HTML форма для налаштування Wi-Fi
 inline const String html = R"rawliteral(
 <!DOCTYPE html>
 <html lang="en">
@@ -157,6 +157,7 @@ inline const String html = R"rawliteral(
 </html>
 )rawliteral";
 
+// Функція для відображення повідомлення на OLED екрані
 void displayMessage(const String& message) {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -164,6 +165,7 @@ void displayMessage(const String& message) {
   display.display();
 }
 
+// Ініціалізація OLED дисплею
 void displayInit() {
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -174,6 +176,7 @@ void displayInit() {
   displayMessage("WiFi Monitor started");
 }
 
+// Ініціалізація файлової системи LittleFS
 void initializeLittleFS() {
   if (!LittleFS.begin()) {
     displayMessage("Failed to mount FS");
@@ -181,6 +184,7 @@ void initializeLittleFS() {
   }
 }
 
+// Функція для підключення до Wi-Fi мережі
 void startAP() {
   IPAddress local_ip(192, 168, 4, 1);
   IPAddress gateway(192, 168, 4, 1);
@@ -190,6 +194,7 @@ void startAP() {
   WiFi.softAP(espSSID, espPassword);
 }
 
+// Функція для збереження конфігурації Wi-Fi в LittleFS
 bool saveConfig (const String& ssid, const String& password) {
   JsonDocument doc;
   doc["ssid"] = ssid;
@@ -206,6 +211,7 @@ bool saveConfig (const String& ssid, const String& password) {
   return true;
 }
 
+// Функція для завантаження конфігурації Wi-Fi з LittleFS
 bool loadConfig(String& ssid, String& password) {
   if (!LittleFS.exists("/config.json")) {
     displayMessage("Config file does not exist");
@@ -213,7 +219,7 @@ bool loadConfig(String& ssid, String& password) {
   }
   File configFile = LittleFS.open("/config.json", "r");
   if (!configFile) {
-    displayMessage("Failed to open config file for reading");
+    displayMessage("Failed to open config\nfile for reading");
     return false;
   }
 
@@ -235,20 +241,21 @@ void serverHandleRoot() {
   server.send(200, "text/html", html);
 }
 
+// Функція для обробки запиту на збереження конфігурації Wi-Fi
 void serverHandleSave() {
   if (server.method() == HTTP_POST) {
     String ssid = server.arg("ssid");
     String password = server.arg("password");
 
     if (saveConfig(ssid, password)) {
-      displayMessage("Configuration saved successfully!");
+      displayMessage("Configuration saved\nsuccessfully!");
       server.send(200, "text/plain", "Configuration saved successfully!");
       delay(200);
       yield();
       delay(1800);
     } else {
       displayMessage("Save failed!\nCheck FS or JSON.");
-      server.send(500, "text/plain", "Save failed!\nCheck FS or JSON.");
+      server.send(500, "text/plain", "Save failed! Check FS or JSON.");
       delay(3000);
     }
   } else {
@@ -257,6 +264,7 @@ void serverHandleSave() {
   ESP.restart();
 }
 
+// Функція для запуску веб-сервера
 void serverStart() {
   server.on("/", serverHandleRoot);
   server.on("/save", serverHandleSave);
@@ -269,6 +277,7 @@ void handleClient() {
   server.handleClient();
 }
 
+// Функція для обробки натискання кнопки
 void IRAM_ATTR buttonISR() {
   unsigned long currentInterruptTime = millis();
   if (currentInterruptTime - lastInterruptTime > debounceDelay) {
@@ -281,6 +290,7 @@ void IRAM_ATTR buttonISR() {
   }
 }
 
+// Функція для відображення інформації про мережу на OLED екрані
 void displayInfo() {
   if (currentPage == 0) {
     displayMessage("Network info, p.1\n\nSSID: " + WiFi.SSID() + "\nBSSID:\n" + WiFi.BSSIDstr() + "\nGateway: " + WiFi.gatewayIP().toString() + "\nRSSI: " + String(WiFi.RSSI()) + " dBm");
@@ -297,6 +307,7 @@ void displayInfo() {
   }
 }
 
+// Функція для оновлення часу пінгу
 void updatePing() {
   if (WiFi.status() == WL_CONNECTED) {
     IPAddress gateway = WiFi.gatewayIP();
@@ -308,6 +319,7 @@ void updatePing() {
   }
 }
 
+// Функція для переходу в режим сну
 void goToSleep() {
   displayMessage("Going to sleep...");
   delay(1000);
