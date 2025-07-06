@@ -157,13 +157,6 @@ inline const String html = R"rawliteral(
 </html>
 )rawliteral";
 
-void displayMessage(const char* message) {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println(message);
-  display.display();
-}
-
 void displayMessage(const String& message) {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -254,8 +247,9 @@ void serverHandleSave() {
       yield();
       delay(1800);
     } else {
-      displayMessage("Failed to save configuration!");
-      server.send(500, "text/plain", "Failed to save configuration!");
+      displayMessage("Save failed!\nCheck FS or JSON.");
+      server.send(500, "text/plain", "Save failed!\nCheck FS or JSON.");
+      delay(3000);
     }
   } else {
     server.send(405, "text/plain", "Method Not Allowed");
@@ -287,7 +281,6 @@ void IRAM_ATTR buttonISR() {
   }
 }
 
-
 void displayInfo() {
   if (currentPage == 0) {
     displayMessage("Network info, p.1\n\nSSID: " + WiFi.SSID() + "\nBSSID:\n" + WiFi.BSSIDstr() + "\nGateway: " + WiFi.gatewayIP().toString() + "\nRSSI: " + String(WiFi.RSSI()) + " dBm");
@@ -313,6 +306,20 @@ void updatePing() {
     pingGateway = -1;
     pingGoogle = -1;
   }
+}
+
+void goToSleep() {
+  displayMessage("Going to sleep...");
+  delay(1000);
+  display.clearDisplay();
+  display.display();
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+
+  if (serverStarted) {
+    server.stop();
+    WiFi.softAPdisconnect(true);
+  }
+  ESP.deepSleep(0);
 }
 
 void setup() {
@@ -361,17 +368,7 @@ void loop() {
     }
 
     if (!sleepCancelled && (currentMillis - startTime >= sleepDelay)) {
-      displayMessage("Going to sleep...");
-      delay(1000);
-
-      display.clearDisplay();
-      display.display();
-      display.ssd1306_command(SSD1306_DISPLAYOFF);
-
-      server.stop();
-      WiFi.softAPdisconnect(true);
-
-      ESP.deepSleep(0);
+      goToSleep();
     }
     return;
   }
@@ -402,13 +399,7 @@ void loop() {
     }
   }
 
-  if (!sleepCancelled && millis() - startTime >= sleepDelay) {
-    displayMessage("Going to sleep...");
-    delay(1000);
-
-    display.clearDisplay();
-    display.display();
-    display.ssd1306_command(SSD1306_DISPLAYOFF);
-    ESP.deepSleep(0);
+  if (!sleepCancelled && (currentMillis - startTime >= sleepDelay)) {
+    goToSleep();
   }
 }
