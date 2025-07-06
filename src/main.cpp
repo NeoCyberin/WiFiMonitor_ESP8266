@@ -1,6 +1,7 @@
 #include <Adafruit_SSD1306.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266Ping.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
@@ -12,12 +13,18 @@
 #define OLED_SDA 14
 #define OLED_SCL 12
 
-#define BUTTON_PIN D4 // GPIO2
+#define BUTTON_PIN D4
 
 volatile bool buttonPressed = false;
 
 const int totalPages = 2;
 volatile int currentPage = 0;
+
+int pingGateway = -1;
+int pingGoogle = -1;
+
+unsigned long lastPingUpdate = 0;
+const unsigned long pingUpdateInterval = 5000;
 
 const char* espSSID = "HW-364A";
 const char* espPassword = "1234567890";
@@ -29,6 +36,14 @@ bool serverStarted = false;
 unsigned long lastPressTime = 0;
 const unsigned long debounceDelay = 500;
 volatile unsigned long lastInterruptTime = 0;
+
+unsigned long buttonDownTime = 0;
+bool buttonHeld = false;
+const unsigned long longPressDuration = 3000;
+
+unsigned long startTime = 0;
+const unsigned long sleepDelay = 60000;
+volatile bool sleepCancelled = false;
 
 inline const String html = R"rawliteral(
 <!DOCTYPE html>
@@ -199,6 +214,10 @@ bool saveConfig (const String& ssid, const String& password) {
 }
 
 bool loadConfig(String& ssid, String& password) {
+  if (!LittleFS.exists("/config.json")) {
+    displayMessage("Config file does not exist");
+    return false;
+  }
   File configFile = LittleFS.open("/config.json", "r");
   if (!configFile) {
     displayMessage("Failed to open config file for reading");
@@ -231,6 +250,9 @@ void serverHandleSave() {
     if (saveConfig(ssid, password)) {
       displayMessage("Configuration saved successfully!");
       server.send(200, "text/plain", "Configuration saved successfully!");
+      delay(200);
+      yield();
+      delay(1800);
     } else {
       displayMessage("Failed to save configuration!");
       server.send(500, "text/plain", "Failed to save configuration!");
@@ -250,24 +272,46 @@ void serverStart() {
   displayMessage("Web Server Started!\n\nWiFi SSID: " + String(espSSID) + "\nPassword: " + String(espPassword) + "\n\nVisit url: \nhttp://" + WiFi.softAPIP().toString() + "/");
 }
 void handleClient() {
-  if (serverStarted) {
-    server.handleClient();
-  }
+  server.handleClient();
 }
 
 void IRAM_ATTR buttonISR() {
   unsigned long currentInterruptTime = millis();
   if (currentInterruptTime - lastInterruptTime > debounceDelay) {
     buttonPressed = true;
+    buttonDownTime = millis();
+    buttonHeld = true;
     lastInterruptTime = currentInterruptTime;
+
+    sleepCancelled = true;
   }
 }
 
-void updateDisplay() {
+
+void displayInfo() {
   if (currentPage == 0) {
-    displayMessage("Network info, p.1 \n\n" + WiFi.SSID() + "\n" + WiFi.BSSIDstr() + "\n" + WiFi.gatewayIP().toString() + "\nRSSI: " + String(WiFi.RSSI()) + " dBm");
+    displayMessage("Network info, p.1\n\nSSID: " + WiFi.SSID() + "\nBSSID:\n" + WiFi.BSSIDstr() + "\nGateway: " + WiFi.gatewayIP().toString() + "\nRSSI: " + String(WiFi.RSSI()) + " dBm");
   } else {
-    displayMessage("Network info, p.2 \n\nChannel: " + String(WiFi.channel()));
+    String statusStr = WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected";
+    String gatewayPingStr = pingGateway >= 0 ? String(pingGateway) + "ms" : "Fail";
+    String googlePingStr = pingGoogle >= 0 ? String(pingGoogle) + "ms" : "Fail";
+
+    displayMessage("Network info, p.2\n\nChannel: " + String(WiFi.channel()) + "\nStatus: " + statusStr + "\nGW Ping: " + gatewayPingStr + "\n8.8.8.8: " + googlePingStr);
+  }
+  if (buttonPressed) {
+    buttonPressed = false;
+    currentPage = (currentPage + 1) % totalPages;
+  }
+}
+
+void updatePing() {
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress gateway = WiFi.gatewayIP();
+    pingGateway = Ping.ping(gateway, 1) ? Ping.averageTime() : -1;
+    pingGoogle = Ping.ping(IPAddress(8,8,8,8), 1) ? Ping.averageTime() : -1;
+  } else {
+    pingGateway = -1;
+    pingGoogle = -1;
   }
 }
 
@@ -285,21 +329,86 @@ void setup() {
     serverStart();
   } else {
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-    while (WiFi.status() != WL_CONNECTED) {
+    int attempts = 0;
+
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(1000);
+      displayMessage("Connecting to WiFi...\nAttempt " + String(attempts + 1));
+      attempts++;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+      displayMessage("WiFi Failed!\nResetting config...");
       delay(500);
-      displayMessage("Connecting to WiFi...");
+      LittleFS.remove("/config.json");
+      delay(500);
+      ESP.restart();
     }
   }
+
+  startTime = millis();
 }
 
 void loop() {
-  handleClient();
-  if (WiFi.status() == WL_CONNECTED) {
-    // Update display with WiFi information
-    updateDisplay();
-    if (buttonPressed) {
-      buttonPressed = false;
-      currentPage = (currentPage + 1) % totalPages;
+  unsigned long currentMillis = millis();
+
+  if (serverStarted) {
+    handleClient();
+
+    if (sleepCancelled) {
+      sleepCancelled = false;
+      startTime = millis();
     }
+
+    if (!sleepCancelled && (currentMillis - startTime >= sleepDelay)) {
+      displayMessage("Going to sleep...");
+      delay(1000);
+
+      display.clearDisplay();
+      display.display();
+      display.ssd1306_command(SSD1306_DISPLAYOFF);
+
+      server.stop();
+      WiFi.softAPdisconnect(true);
+
+      ESP.deepSleep(0);
+    }
+    return;
+  }
+  
+  if (currentMillis - lastPingUpdate >= pingUpdateInterval) {
+    lastPingUpdate = currentMillis;
+    updatePing();
+  }
+
+  if (sleepCancelled) {
+    sleepCancelled = false;
+    startTime = currentMillis;
+  }
+
+  displayInfo();
+
+  if (buttonHeld && digitalRead(BUTTON_PIN) == HIGH) {
+    buttonHeld = false;
+    unsigned long pressDuration = millis() - buttonDownTime;
+
+    if (pressDuration >= longPressDuration) {
+      displayMessage("Resetting config...");
+      delay(500);
+
+      LittleFS.remove("/config.json");
+      delay(500);
+      ESP.restart();
+    }
+  }
+
+  if (!sleepCancelled && millis() - startTime >= sleepDelay) {
+    displayMessage("Going to sleep...");
+    delay(1000);
+
+    display.clearDisplay();
+    display.display();
+    display.ssd1306_command(SSD1306_DISPLAYOFF);
+    ESP.deepSleep(0);
   }
 }
