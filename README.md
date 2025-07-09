@@ -34,17 +34,6 @@
 - `LittleFS`
 - `ArduinoJson`
 
-У PlatformIO додайте в `platformio.ini`:
-```ini
-lib_deps =
-  adafruit/Adafruit SSD1306
-  ESP8266WiFi
-  ESP8266WebServer
-  ESP8266Ping
-  LittleFS
-  bblanchon/ArduinoJson
-```
-
 ## Налаштування Wi-Fi
 
 1. При першому запуску або після скидання конфігурації ESP8266 створить точку доступу:
@@ -69,8 +58,8 @@ lib_deps =
 
 - **Сторінка 2:**
   ```
-  WiFi Status (Connected/Disconnected)
   Channel
+  WiFi Status (Connected/Disconnected)
   Gateway ping (ms)
   8.8.8.8 ping (ms)
   ```
